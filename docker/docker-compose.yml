@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: vocabulary_db
+    restart: always
+    environment:
+      POSTGRES_USER: regular_user
+      POSTGRES_PASSWORD: this_is_a_password
+      POSTGRES_DB: englishWordsDB
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:
+
