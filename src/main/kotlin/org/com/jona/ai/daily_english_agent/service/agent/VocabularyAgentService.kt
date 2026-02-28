@@ -82,8 +82,12 @@ class VocabularyAgentService(
                     ))
                 }
 
-                val ollamaResponse: OllamaResponse = response.body()
-                logger.info("Received response from LLM: ${ollamaResponse.response.take(100)}...")
+                val responseText: String = response.body()
+                logger.info("Received raw response from LLM: ${responseText.take(200)}...")
+
+                // Parse the JSON response
+                val ollamaResponse = Json.decodeFromString<OllamaResponse>(responseText)
+                logger.info("Parsed response: ${ollamaResponse.response.take(100)}...")
 
                 parseResponse(ollamaResponse.response)
             }
