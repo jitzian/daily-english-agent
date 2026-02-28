@@ -68,3 +68,12 @@ replay_pid*
 *.swp
 *.bak
 *~
+
+# Docker secrets — NEVER commit the .env file (contains Discord token)
+# Use .env.example as a template instead.
+.env
+
+# Legacy docker/ folder superseded by root docker-compose.yml
+# Keep the folder locally for reference but do not commit it.
+docker/
+

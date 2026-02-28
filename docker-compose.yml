@@ -1,0 +1,118 @@
+# =============================================================
+# Daily English Vocabulary Agent – Full Stack Compose File
+#
+# Replaces docker/docker-compose.yml (DB-only) with a single
+# file that orchestrates every service.
+#
+# Usage:
+#   docker compose up -d --build          # first run / after code changes
+#   docker compose up -d                  # subsequent runs (uses cached image)
+#   docker compose logs -f app            # follow app logs
+#   docker compose down                   # stop all services
+#   docker compose down -v                # stop + wipe database volume
+#
+# Prerequisites:
+#   - Docker Desktop running (Mac / Windows) or Docker Engine (Linux)
+#   - Ollama running on the HOST machine with llama3.2:latest pulled
+#     Check: curl http://localhost:11434/  → should return "Ollama is running"
+#   - .env file present at project root (see .env.example)
+#
+# Port assignments:
+#   8090  →  Spring Boot / Tomcat (REST + Actuator)
+#   8091  →  Ktor server          (word-of-the-day API)
+#   5432  →  PostgreSQL            (exposed for local DB tools)
+#
+# Timezone note:
+#   The app container runs with TZ=America/New_York so the daily
+#   cron (0 0 7 * * *) fires at 7 AM EST / 8 AM EDT.
+# =============================================================
+
+services:
+
+  # -----------------------------------------------------------
+  # PostgreSQL database
+  # -----------------------------------------------------------
+  db:
+    image: postgres:16-alpine
+    container_name: vocabulary_db
+    restart: always
+    environment:
+      POSTGRES_USER: regular_user
+      POSTGRES_PASSWORD: this_is_a_password
+      POSTGRES_DB: englishWordsDB
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # Wait until Postgres is ready to accept connections before
+      # the app container is allowed to start.
+      test: ["CMD-SHELL", "pg_isready -U regular_user -d englishWordsDB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # -----------------------------------------------------------
+  # Daily English Vocabulary Agent (Spring Boot + Ktor)
+  # -----------------------------------------------------------
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: daily-english-agent:latest
+    container_name: daily-english-agent
+    restart: always
+    ports:
+      - "8090:8090"
+      - "8091:8091"
+    environment:
+      # ── Database ─────────────────────────────────────────────
+      # Inside Docker, Postgres is reachable via the service name
+      # 'db', not 'localhost'.  This overrides application.properties.
+      SPRING_DATASOURCE_URL: jdbc:postgresql://db:5432/englishWordsDB
+      SPRING_DATASOURCE_USERNAME: regular_user
+      SPRING_DATASOURCE_PASSWORD: this_is_a_password
+
+      # ── Ollama ───────────────────────────────────────────────
+      # Ollama runs on the HOST machine (not containerised).
+      # 'host.docker.internal' resolves to the host on Docker Desktop
+      # (Mac/Windows).  On Linux the extra_hosts entry below makes
+      # this name available too.
+      #
+      # VPN NOTE: if NordVPN is active and blocks 'localhost', the
+      # host.docker.internal address bypasses split-DNS because it
+      # is resolved by the Docker daemon, not the OS resolver.
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+
+      # ── Vocabulary schedule ──────────────────────────────────
+      # Production: daily at 7 AM EST.
+      # To test Docker posting uncomment the 5-minute line and
+      # comment out the daily one, then re-run: docker compose up -d
+      VOCABULARY_FETCH_CRON: "0 0 7 * * *"
+      #VOCABULARY_FETCH_CRON: "0 */5 * * * *"
+
+      # ── Discord ──────────────────────────────────────────────
+      # Values are sourced from the .env file at project root.
+      # Never hardcode tokens in this file.
+      DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN}
+      DISCORD_CHANNEL_ID: ${DISCORD_CHANNEL_ID}
+      DISCORD_ENABLED: "true"
+      DISCORD_TEST_MODE: "false"
+      DISCORD_TEST_PREFIX: "[TEST]"
+
+    depends_on:
+      db:
+        condition: service_healthy   # App only starts once Postgres is ready
+
+    extra_hosts:
+      # Ensures host.docker.internal resolves on Linux hosts.
+      # On Docker Desktop (Mac/Windows) this is automatic.
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  pgdata:
+    # Named volume — data persists across 'docker compose down'.
+    # Use 'docker compose down -v' to also wipe the database.
+
+

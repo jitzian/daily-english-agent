@@ -2,20 +2,38 @@ package org.com.jona.ai.daily_english_agent.service.ollama
 
 import jakarta.annotation.PostConstruct
 import kotlinx.coroutines.*
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Service
-import java.io.BufferedReader
-import java.io.InputStreamReader
+import java.net.HttpURLConnection
+import java.net.URI
 
+/**
+ * Manages the Ollama model lifecycle via the Ollama HTTP API.
+ *
+ * Uses GET  /api/tags  to check whether the model is already present.
+ * Uses POST /api/pull  to pull the model when it is missing.
+ *
+ * The ollama CLI binary is NOT used — it does not exist inside the
+ * Docker container.  All communication goes through the HTTP endpoint
+ * configured via ollama.base.url (host.docker.internal:11434 in Docker,
+ * 127.0.0.1:11434 in local dev).
+ */
 @Service
 class OllamaModelService(
+    @Value("\${ollama.base.url}") private val ollamaBaseUrl: String,
     @Value("\${ollama.model.name}") private val modelName: String,
     @Value("\${ollama.timeout.seconds}") private val timeoutSeconds: Long,
     @Value("\${vocabulary.retry.max.attempts}") private val maxAttempts: Int,
     @Value("\${vocabulary.retry.delay.seconds}") private val retryDelaySeconds: Long
 ) {
     private val logger = LoggerFactory.getLogger(OllamaModelService::class.java)
+    private val lenientJson = Json { ignoreUnknownKeys = true }
+
+    @Serializable data class OllamaModel(val name: String)
+    @Serializable data class OllamaTagsResponse(val models: List<OllamaModel> = emptyList())
 
     @PostConstruct
     fun validateAndPullModel() {
@@ -25,14 +43,14 @@ class OllamaModelService(
 
             while (attempt < maxAttempts && !success) {
                 attempt++
-                logger.info("Attempt $attempt/$maxAttempts: Validating Ollama model...")
+                logger.info("Attempt $attempt/$maxAttempts: Validating Ollama model via HTTP API...")
 
                 try {
                     if (checkModelExists()) {
                         logger.info("Ollama model $modelName is already available")
                         success = true
                     } else {
-                        logger.info("Ollama model $modelName not found. Attempting to pull...")
+                        logger.info("Ollama model $modelName not found. Attempting to pull via HTTP API...")
                         if (pullModel()) {
                             logger.info("Successfully pulled Ollama model $modelName")
                             success = true
@@ -41,7 +59,7 @@ class OllamaModelService(
                         }
                     }
                 } catch (e: Exception) {
-                    logger.error("Error during Ollama model validation on attempt $attempt: ${e.message}", e)
+                    logger.error("Error during Ollama model validation on attempt $attempt: ${e.message}")
                 }
 
                 if (!success && attempt < maxAttempts) {
@@ -51,26 +69,36 @@ class OllamaModelService(
             }
 
             if (!success) {
-                logger.error("Failed to validate/pull Ollama model after $maxAttempts attempts")
-                throw RuntimeException("Ollama model $modelName is not available and could not be pulled")
+                // Non-fatal: the app continues to start.
+                // Word generation will fail gracefully and retry on the next cron tick.
+                logger.warn("Could not validate/pull Ollama model after $maxAttempts attempts — continuing startup")
             }
         }
     }
 
     suspend fun checkModelExists(): Boolean = withContext(Dispatchers.IO) {
         try {
-            val process = ProcessBuilder("ollama", "list")
-                .redirectErrorStream(true)
-                .start()
+            val url = URI("$ollamaBaseUrl/api/tags").toURL()
+            val conn = url.openConnection() as HttpURLConnection
+            conn.requestMethod = "GET"
+            conn.connectTimeout = 5_000
+            conn.readTimeout = 10_000
 
-            val output = BufferedReader(InputStreamReader(process.inputStream)).use { reader ->
-                reader.readText()
+            if (conn.responseCode != 200) {
+                logger.warn("Ollama /api/tags returned HTTP ${conn.responseCode}")
+                conn.disconnect()
+                return@withContext false
             }
 
-            process.waitFor()
-            output.contains(modelName)
+            val body = conn.inputStream.bufferedReader().readText()
+            conn.disconnect()
+
+            val tagsResponse = lenientJson.decodeFromString<OllamaTagsResponse>(body)
+            // Match on the base name (before ':') to handle "llama3.2:latest" vs "llama3.2"
+            val baseModel = modelName.substringBefore(":")
+            tagsResponse.models.any { it.name.startsWith(baseModel) }
         } catch (e: Exception) {
-            logger.error("Error checking if model exists: ${e.message}", e)
+            logger.error("Error checking Ollama model via HTTP API: ${e.message}")
             false
         }
     }
@@ -78,40 +106,36 @@ class OllamaModelService(
     suspend fun pullModel(): Boolean = withContext(Dispatchers.IO) {
         try {
             withTimeout(timeoutSeconds * 1000) {
-                logger.info("Pulling Ollama model $modelName (timeout: ${timeoutSeconds}s)...")
+                logger.info("Pulling Ollama model $modelName via HTTP API (timeout: ${timeoutSeconds}s)...")
 
-                val process = ProcessBuilder("ollama", "pull", modelName)
-                    .redirectErrorStream(true)
-                    .start()
+                val url = URI("$ollamaBaseUrl/api/pull").toURL()
+                val conn = url.openConnection() as HttpURLConnection
+                conn.requestMethod = "POST"
+                conn.doOutput = true
+                conn.setRequestProperty("Content-Type", "application/json")
+                conn.connectTimeout = 10_000
+                conn.readTimeout = (timeoutSeconds * 1000).toInt()
 
-                val output = BufferedReader(InputStreamReader(process.inputStream)).use { reader ->
-                    val lines = mutableListOf<String>()
-                    var line: String?
-                    while (reader.readLine().also { line = it } != null) {
-                        line?.let {
-                            lines.add(it)
-                            if (it.contains("success") || it.contains("pulling")) {
-                                logger.info("Pull progress: $it")
-                            }
-                        }
-                    }
-                    lines.joinToString("\n")
-                }
+                val payload = """{"name":"$modelName","stream":false}"""
+                conn.outputStream.bufferedWriter().use { it.write(payload) }
 
-                val exitCode = process.waitFor()
-                if (exitCode == 0) {
-                    logger.info("Model pull completed successfully")
+                val responseCode = conn.responseCode
+                val body = conn.inputStream.bufferedReader().readText()
+                conn.disconnect()
+
+                if (responseCode == 200) {
+                    logger.info("Model pull succeeded: ${body.take(200)}")
                     true
                 } else {
-                    logger.error("Model pull failed with exit code $exitCode: $output")
+                    logger.error("Model pull failed — HTTP $responseCode: ${body.take(200)}")
                     false
                 }
             }
         } catch (e: TimeoutCancellationException) {
-            logger.error("Timeout while pulling model $modelName after ${timeoutSeconds}s")
+            logger.error("Timeout pulling model $modelName after ${timeoutSeconds}s")
             false
         } catch (e: Exception) {
-            logger.error("Error pulling model: ${e.message}", e)
+            logger.error("Error pulling model via HTTP API: ${e.message}")
             false
         }
     }
