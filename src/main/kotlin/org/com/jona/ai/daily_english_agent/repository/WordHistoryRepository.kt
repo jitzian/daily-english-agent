@@ -13,6 +13,11 @@ interface WordHistoryRepository : JpaRepository<WordOfTheDayEntity, UUID> {
 
     fun existsByWord(word: String): Boolean
 
+    @Modifying
+    @Transactional
+    @Query("DELETE FROM WordOfTheDayEntity w WHERE w.word = :word")
+    fun deleteByWord(word: String)
+
     fun findFirstByIsActiveTrueOrderByFetchedAtDesc(): WordOfTheDayEntity?
 
     fun findAllByOrderByFetchedAtDesc(): List<WordOfTheDayEntity>

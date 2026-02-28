@@ -57,12 +57,32 @@ dependencies {
 	// Serialization
 	implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
 
+	// Discord Integration
+	// reactor-netty-http is intentionally NOT declared here; Spring Boot BOM manages
+	// its version. The configurations block below forces Discord4J's transitive
+	// reactor-netty dependencies to align with the BOM version, preventing the
+	// NoSuchMethodError caused by mixing 1.1.x and 1.3.x jars on the classpath.
+	implementation("com.discord4j:discord4j-core:3.2.7")
+
 }
 
 allOpen {
 	annotation("jakarta.persistence.Entity")
 	annotation("jakarta.persistence.MappedSuperclass")
 	annotation("jakarta.persistence.Embeddable")
+}
+
+// Force all reactor-netty artifacts to the version managed by the Spring Boot BOM.
+// Discord4J 3.2.x pins reactor-netty to 1.0/1.1, but Spring Boot 4.x needs 1.3.x.
+// Without this, reactor-netty-http:1.1.x and reactor-netty-core:1.3.x end up on the
+// classpath together, causing NoSuchMethodError at runtime.
+configurations.all {
+	resolutionStrategy.eachDependency {
+		if (requested.group == "io.projectreactor.netty") {
+			useVersion("1.3.3")
+			because("Align with Spring Boot 4.x BOM — prevents binary incompatibility with Discord4J")
+		}
+	}
 }
 
 kotlin {

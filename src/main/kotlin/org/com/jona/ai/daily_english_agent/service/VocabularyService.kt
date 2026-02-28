@@ -3,12 +3,12 @@ package org.com.jona.ai.daily_english_agent.service
 import jakarta.annotation.PostConstruct
 import kotlinx.coroutines.*
 import org.com.jona.ai.daily_english_agent.model.EntityToDomainMapper
-import org.com.jona.ai.daily_english_agent.model.WordOfTheDayData
 import org.com.jona.ai.daily_english_agent.model.WordOfTheDayMapper
 import org.com.jona.ai.daily_english_agent.model.WordOfTheDayResponse
 import org.com.jona.ai.daily_english_agent.repository.WordHistoryRepository
 import org.com.jona.ai.daily_english_agent.repository.entity.WordOfTheDayEntity
 import org.com.jona.ai.daily_english_agent.service.agent.VocabularyAgentService
+import org.com.jona.ai.daily_english_agent.service.discord.DiscordService
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.scheduling.annotation.Scheduled
@@ -20,6 +20,7 @@ import java.time.LocalDateTime
 class VocabularyService(
     private val wordHistoryRepository: WordHistoryRepository,
     private val vocabularyAgentService: VocabularyAgentService,
+    private val discordService: DiscordService,
     @Value("\${vocabulary.retry.max.attempts}") private val maxAttempts: Int,
     @Value("\${vocabulary.retry.delay.seconds}") private val retryDelaySeconds: Long
 ) {
@@ -87,6 +88,10 @@ class VocabularyService(
                            wordData.exampleEnglish, wordData.exampleSpanish, null)
 
                 logger.info("Successfully fetched and stored new word: ${wordData.word}")
+
+                // Post to Discord AFTER the transaction is committed
+                val domain = wordMapper(wordData)
+                discordService.postWordOfTheDay(domain)
             } catch (e: Exception) {
                 logger.error("Error fetching new word: ${e.message}", e)
                 saveErrorWord(e.message ?: "Unknown error")
@@ -114,6 +119,11 @@ class VocabularyService(
                            wordData.exampleEnglish, wordData.exampleSpanish, null)
 
                 logger.info("Successfully fetched initial word: ${wordData.word}")
+
+                // Post to Discord AFTER the transaction is committed
+                val domain = wordMapper(wordData)
+                discordService.postWordOfTheDay(domain)
+
                 success = true
             } catch (e: Exception) {
                 logger.error("Attempt $attempt failed: ${e.message}", e)
@@ -166,6 +176,15 @@ class VocabularyService(
     fun saveErrorWord(errorMessage: String) {
         logger.info("→ Starting transaction to save error record")
 
+        // Remove any existing ERROR placeholder before inserting a new one
+        // to avoid hitting the unique constraint on the 'word' column
+        if (wordHistoryRepository.existsByWord("ERROR")) {
+            wordHistoryRepository.deleteByWord("ERROR")
+            logger.info("  Removed previous ERROR placeholder")
+        }
+
+        wordHistoryRepository.deactivateAllWords()
+
         val entity = WordOfTheDayEntity(
             word = "ERROR",
             partOfSpeech = "N/A",
@@ -177,7 +196,6 @@ class VocabularyService(
             errorMessage = errorMessage
         )
 
-        wordHistoryRepository.deactivateAllWords()
         val savedEntity = wordHistoryRepository.save(entity)
         logger.info("✓ Transaction committed successfully for error record with ID: ${savedEntity.id}")
     }
