@@ -2,6 +2,8 @@
 
 > **Why I Built This:** After downloading *Vocabulary Builder*, *WordUp*, *Memrise*, and approximately 47 other "premium" vocabulary apps from the Play Store — all of which wanted $9.99/month just to tell me what "perspicacious" means — I had an epiphany. 💡 I'm a developer. I have a computer. I have an irrational attachment to my money. Why am I paying for something I can build myself in a weekend fueled by coffee and spite? So here we are: a fully automated, AI-powered, Discord-posting, PostgreSQL-backed vocabulary teacher that cost me $0/month and 100% of my dignity when I explained this project to my friends. 🎯
 
+![Funny GIF](https://media.giphy.com/media/v1.Y2lkPWVjZjA1ZTQ3Nm55a3o4anY1dzA5dXhlN3hyMnY2NmwzMnA2MzJxeWJhcXU5ZW1sNSZlcD12MV9naWZzX3NlYXJjaCZjdD1n/1KrM2hhDN3dgk/giphy.gif)
+
 ---
 
 ## 🎯 What Does This Do?
@@ -28,6 +30,12 @@ A **Spring Boot + Ktor** microservice that uses **Ollama's llama3.2:latest** mod
 - 🌐 **Dual Server** — Spring Boot on **8090** (management), Ktor on **8091** (API)
 - ⚡ **Kotlin Coroutines** — Async operations with `Dispatchers.IO`
 - 🐳 **Fully Containerized** — Single `docker compose up -d --build` deploys everything
+
+---
+
+## Screenshot
+
+![App Screenshot](screenshots/discord_example.png)
 
 ---
 
