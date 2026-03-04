@@ -3,6 +3,7 @@ package org.com.jona.ai.daily_english_agent.service.agent
 import io.ktor.client.*
 import io.ktor.client.call.*
 import io.ktor.client.engine.cio.*
+import io.ktor.client.plugins.*
 import io.ktor.client.plugins.contentnegotiation.*
 import io.ktor.client.request.*
 import io.ktor.http.*
@@ -44,6 +45,15 @@ class VocabularyAgentService(
                 ignoreUnknownKeys = true
                 isLenient = true
             })
+        }
+        // Explicit timeouts so the CIO engine never fires before our coroutine
+        // withTimeout does.  requestTimeoutMillis covers the full round-trip
+        // (connect + send + receive), which is what we want for slow LLM responses.
+        // socketTimeoutMillis is set generously to avoid cutting streaming tokens.
+        install(HttpTimeout) {
+            requestTimeoutMillis = timeoutSeconds * 1_000
+            connectTimeoutMillis = 10_000
+            socketTimeoutMillis  = timeoutSeconds * 1_000
         }
     }
 
