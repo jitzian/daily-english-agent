@@ -4,11 +4,13 @@ import jakarta.annotation.PostConstruct
 import kotlinx.coroutines.*
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import org.com.jona.ai.daily_english_agent.service.model.OllamaTagsResponse
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.stereotype.Service
 import java.net.HttpURLConnection
 import java.net.URI
+import kotlin.time.Duration.Companion.milliseconds
 
 /**
  * Manages the Ollama model lifecycle via the Ollama HTTP API.
@@ -31,9 +33,6 @@ class OllamaModelService(
 ) {
     private val logger = LoggerFactory.getLogger(OllamaModelService::class.java)
     private val lenientJson = Json { ignoreUnknownKeys = true }
-
-    @Serializable data class OllamaModel(val name: String)
-    @Serializable data class OllamaTagsResponse(val models: List<OllamaModel> = emptyList())
 
     @PostConstruct
     fun validateAndPullModel() {
@@ -105,7 +104,7 @@ class OllamaModelService(
 
     suspend fun pullModel(): Boolean = withContext(Dispatchers.IO) {
         try {
-            withTimeout(timeoutSeconds * 1000) {
+            withTimeout((timeoutSeconds * 1000).milliseconds) {
                 logger.info("Pulling Ollama model $modelName via HTTP API (timeout: ${timeoutSeconds}s)...")
 
                 val url = URI("$ollamaBaseUrl/api/pull").toURL()
@@ -131,7 +130,7 @@ class OllamaModelService(
                     false
                 }
             }
-        } catch (e: TimeoutCancellationException) {
+        } catch (_: TimeoutCancellationException) {
             logger.error("Timeout pulling model $modelName after ${timeoutSeconds}s")
             false
         } catch (e: Exception) {
