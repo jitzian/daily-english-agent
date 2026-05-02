@@ -3,6 +3,7 @@ package org.com.jona.ai.daily_english_agent.service
 import jakarta.annotation.PostConstruct
 import kotlinx.coroutines.*
 import org.com.jona.ai.daily_english_agent.model.EntityToDomainMapper
+import java.util.concurrent.atomic.AtomicBoolean
 import org.com.jona.ai.daily_english_agent.model.WordOfTheDayMapper
 import org.com.jona.ai.daily_english_agent.model.WordOfTheDayResponse
 import org.com.jona.ai.daily_english_agent.repository.WordHistoryRepository
@@ -27,6 +28,27 @@ class VocabularyService(
     private val logger = LoggerFactory.getLogger(VocabularyService::class.java)
     private val wordMapper = WordOfTheDayMapper()
     private val entityMapper = EntityToDomainMapper()
+
+    /**
+     * Dedicated coroutine scope for background fetch operations.
+     *
+     * WHY NOT runBlocking:
+     * The @Scheduled method must NEVER block its caller thread (Spring's vocab-scheduler-N).
+     * Using runBlocking would occupy the scheduler thread for the full Ollama round-trip
+     * (up to 180 s) — or indefinitely if the Mac goes to sleep mid-request with an active
+     * TCP connection, causing the coroutine/socket timeouts to be suspended alongside the JVM.
+     * This resulted in the "scheduler stops for days" bug observed Apr 29 – May 1.
+     *
+     * Using CoroutineScope.launch means the @Scheduled method returns immediately and the
+     * scheduler thread is free to fire the next 7 AM cron regardless of what the previous
+     * task is doing.
+     *
+     * SupervisorJob: exceptions in one fetch do not cancel the scope or future coroutines.
+     */
+    private val fetchScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
+    // Prevents overlapping fetches if a previous one is still in progress.
+    private val fetchInProgress = AtomicBoolean(false)
 
     @PostConstruct
     fun initializeFirstWord() {
@@ -55,46 +77,69 @@ class VocabularyService(
         logger.info("========================================")
     }
 
+    /**
+     * Scheduled word fetch — fires daily at the configured cron time (default 7 AM EST).
+     *
+     * CRITICAL: this method returns IMMEDIATELY by launching work on [fetchScope].
+     * It must NEVER block the caller (Spring's vocab-scheduler-N thread).
+     *
+     * Background: when Mac sleeps mid-Ollama-request the JVM is also suspended,
+     * so the Ktor/coroutine timeouts are frozen too.  If the scheduler thread were
+     * blocked (e.g., via runBlocking) it would stay blocked for days after the Mac
+     * wakes, silently dropping every subsequent 7 AM trigger.  The separate scope
+     * eliminates that risk completely.
+     */
     @Scheduled(cron = "\${vocabulary.fetch.cron}")
     fun fetchAndStoreNewWord() {
-        logger.info("Starting scheduled word fetch...")
-        runBlocking {
+        logger.info("Scheduled word fetch triggered — launching on background scope...")
+
+        if (!fetchInProgress.compareAndSet(false, true)) {
+            logger.warn("A previous word fetch is still in progress — skipping this trigger to avoid overlap.")
+            return
+        }
+
+        fetchScope.launch {
             try {
-                // Fetch word data in coroutine context
-                val wordData = withContext(Dispatchers.IO) {
-                    val usedWords = wordHistoryRepository.findAllWords()
-                    logger.info("Found ${usedWords.size} words already in database")
+                logger.info("Background word fetch started...")
 
-                    var attempts = 0
-                    var generatedWord = vocabularyAgentService.generateWord(usedWords)
+                val usedWords = withContext(Dispatchers.IO) { wordHistoryRepository.findAllWords() }
+                logger.info("Found ${usedWords.size} words already in database")
 
-                    // Application-level duplicate validation with retry
-                    while (wordHistoryRepository.existsByWord(generatedWord.word) && attempts < 3) {
-                        attempts++
-                        logger.warn("Generated word '${generatedWord.word}' already exists. Retry attempt $attempts/3")
-                        generatedWord = vocabularyAgentService.generateWord(usedWords)
-                    }
+                var attempts = 0
+                var generatedWord = vocabularyAgentService.generateWord(usedWords)
 
-                    if (wordHistoryRepository.existsByWord(generatedWord.word)) {
-                        logger.error("Failed to generate unique word after 3 attempts")
-                        throw RuntimeException("Could not generate unique word")
-                    }
-
-                    generatedWord
+                // Application-level duplicate validation with retry
+                while (wordHistoryRepository.existsByWord(generatedWord.word) && attempts < 3) {
+                    attempts++
+                    logger.warn("Generated word '${generatedWord.word}' already exists. Retry attempt $attempts/3")
+                    generatedWord = vocabularyAgentService.generateWord(usedWords)
                 }
 
-                // Save word OUTSIDE coroutine context where @Transactional works
-                saveNewWord(wordData.word, wordData.partOfSpeech, wordData.synonyms,
-                           wordData.exampleEnglish, wordData.exampleSpanish, null)
+                if (wordHistoryRepository.existsByWord(generatedWord.word)) {
+                    logger.error("Failed to generate unique word after 3 attempts")
+                    throw RuntimeException("Could not generate unique word")
+                }
 
-                logger.info("Successfully fetched and stored new word: ${wordData.word}")
+                // Save and post — run on Dispatchers.IO thread; Spring Data's own
+                // @Transactional on SimpleJpaRepository.save() wraps each persistence call.
+                withContext(Dispatchers.IO) {
+                    saveNewWord(
+                        generatedWord.word, generatedWord.partOfSpeech, generatedWord.synonyms,
+                        generatedWord.exampleEnglish, generatedWord.exampleSpanish, null
+                    )
+                }
 
-                // Post to Discord AFTER the transaction is committed
-                val domain = wordMapper(wordData)
+                logger.info("Successfully fetched and stored new word: ${generatedWord.word}")
+
+                val domain = wordMapper(generatedWord)
                 discordService.postWordOfTheDay(domain)
+
             } catch (e: Exception) {
                 logger.error("Error fetching new word: ${e.message}", e)
-                saveErrorWord(e.message ?: "Unknown error")
+                withContext(Dispatchers.IO) { saveErrorWord(e.message ?: "Unknown error") }
+            } finally {
+                fetchInProgress.set(false)
+                logger.info("Background word fetch complete — scheduler thread was never blocked.")
             }
         }
     }
