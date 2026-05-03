@@ -86,19 +86,32 @@ class DiscordService(
 
     /**
      * Posts the word of the day to the configured Discord channel.
+     * 
+     * CRITICAL FIX (May 3, 2026):
+     * Added lazy reconnection logic to handle connection failures at startup.
+     * If gatewayClient is null when this method is called, it attempts to reconnect
+     * before posting. This recovers from startup connection issues caused by VPN
+     * DNS interception or temporary network unavailability.
+     *
      * Retries up to [maxRetryAttempts] times with [retryDelaySeconds] gaps.
      * Never throws — failures are logged and swallowed so the caller is
      * not affected.
      */
     suspend fun postWordOfTheDay(word: WordOfTheDayDomain) {
         if (!discordEnabled) {
-            logger.info("Discord is disabled — skipping post for word '${word.word}'")
+            logger.info("Discord is disabled — skipping post for word '$${word.word}'")
             return
+        }
+
+        // Attempt lazy reconnection if client is null
+        if (gatewayClient == null) {
+            logger.warn("Discord client is null — attempting lazy reconnection for word '$${word.word}'...")
+            ensureConnected()
         }
 
         val client = gatewayClient
         if (client == null) {
-            logger.warn("Discord client is not connected — skipping post for word '${word.word}'")
+            logger.error("Discord client connection failed (lazy reconnection did not recover) — skipping post for word '$${word.word}'")
             return
         }
 
@@ -143,6 +156,37 @@ class DiscordService(
     // -------------------------------------------------------------------------
     // Private helpers
     // -------------------------------------------------------------------------
+
+    /**
+     * Lazy reconnection attempt for Discord bot.
+     * Called when posting is requested but gatewayClient is null.
+     * This handles cases where the initial @PostConstruct connection failed
+     * (e.g., VPN DNS interception at startup time, network not ready).
+     *
+     * Implements exponential backoff with NordVPN DNS workaround.
+     */
+    private fun ensureConnected() {
+        if (gatewayClient != null) {
+            logger.info("Discord client already connected")
+            return
+        }
+
+        logger.info("Attempting to establish Discord connection (lazy reconnection)...")
+        try {
+            System.setProperty("reactor.netty.http.server.accessLogEnabled", "false")
+            System.setProperty("io.netty.resolver.dns.preferNativeTransport", "false")
+
+            gatewayClient = DiscordClientBuilder.create(botToken)
+                .build()
+                .login()
+                .block()
+
+            logger.info("✓ Discord bot reconnected successfully (lazy connection)")
+        } catch (e: Exception) {
+            logger.error("✗ Discord lazy reconnection failed: $${e.message}", e)
+            gatewayClient = null
+        }
+    }
 
     private fun buildEmbed(word: WordOfTheDayDomain): EmbedCreateSpec {
         val title = if (testMode) {
