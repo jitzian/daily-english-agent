@@ -133,13 +133,13 @@ class VocabularyService(
 
                 val domain = wordMapper(generatedWord)
                 discordService.postWordOfTheDay(domain)
-
-            } catch (e: Exception) {
-                logger.error("Error fetching new word: ${e.message}", e)
-                withContext(Dispatchers.IO) { saveErrorWord(e.message ?: "Unknown error") }
+                logger.info("Word posting to Discord initiated (will retry if connection fails)")
+                logger.error(\"Error fetching new word: ${e.javaClass.simpleName}: ${e.message}\", e)
+                withContext(Dispatchers.IO) { saveErrorWord(e.message ?: \"Unknown error\") }
+                logger.warn(\"Error saved to database. Scheduler will retry on next cron trigger.\")
             } finally {
                 fetchInProgress.set(false)
-                logger.info("Background word fetch complete — scheduler thread was never blocked.")
+                logger.info(\"Background word fetch cycle complete — scheduler thread was never blocked and is free for next trigger.\")
             }
         }
     }
