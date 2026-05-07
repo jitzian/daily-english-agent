@@ -89,8 +89,6 @@ services:
 
       # ── Vocabulary schedule ──────────────────────────────────
       # Production: daily at 7 AM EST.
-      # To test Docker posting uncomment the 5-minute line and
-      # comment out the daily one, then re-run: docker compose up -d
       VOCABULARY_FETCH_CRON: "0 0 7 * * *"
       #VOCABULARY_FETCH_CRON: "0 */5 * * * *"
 

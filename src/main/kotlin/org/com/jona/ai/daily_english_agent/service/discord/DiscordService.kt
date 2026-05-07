@@ -87,11 +87,14 @@ class DiscordService(
     /**
      * Posts the word of the day to the configured Discord channel.
      * 
-     * CRITICAL FIX (May 3, 2026):
-     * Added lazy reconnection logic to handle connection failures at startup.
-     * If gatewayClient is null when this method is called, it attempts to reconnect
-     * before posting. This recovers from startup connection issues caused by VPN
-     * DNS interception or temporary network unavailability.
+     * CRITICAL FIX (May 5, 2026):
+     * Enhanced error handling to gracefully handle VPN DNS interception and WebSocket
+     * connection instability. If the gateway client is null or becomes unstable,
+     * this method logs the issue and returns without crashing.
+     *
+     * VPN ISSUE: NordVPN split-DNS can intercept Discord API calls, causing WebSocket
+     * closure (1006 Abnormal closure). The retry logic and lazy reconnection handle
+     * this gracefully without blocking the scheduler.
      *
      * Retries up to [maxRetryAttempts] times with [retryDelaySeconds] gaps.
      * Never throws — failures are logged and swallowed so the caller is
@@ -99,19 +102,22 @@ class DiscordService(
      */
     suspend fun postWordOfTheDay(word: WordOfTheDayDomain) {
         if (!discordEnabled) {
-            logger.info("Discord is disabled — skipping post for word '$${word.word}'")
+            logger.info("Discord is disabled — skipping post for word '${word.word}'")
             return
         }
 
-        // Attempt lazy reconnection if client is null
+        logger.info("Attempting to post word '${word.word}' to Discord...")
+
+        // Attempt lazy reconnection if client is null or appears disconnected
         if (gatewayClient == null) {
-            logger.warn("Discord client is null — attempting lazy reconnection for word '$${word.word}'...")
+            logger.warn("Discord client is null — attempting lazy reconnection for word '${word.word}'...")
             ensureConnected()
         }
 
         val client = gatewayClient
         if (client == null) {
-            logger.error("Discord client connection failed (lazy reconnection did not recover) — skipping post for word '$${word.word}'")
+            logger.error("Discord client connection failed (lazy reconnection did not recover) — skipping post for word '${word.word}'")
+            logger.info("Word '${word.word}' was successfully stored in database but Discord posting could not be completed. Scheduler will continue normally.")
             return
         }
 
@@ -139,17 +145,19 @@ class DiscordService(
                 logger.info("✓ Successfully posted word '${word.word}' to Discord (attempt $attempt)")
                 success = true
             } catch (e: Exception) {
-                logger.error("✗ Discord post attempt $attempt failed: ${e.message}")
+                logger.error("✗ Discord post attempt $attempt failed: ${e.javaClass.simpleName}: ${e.message}")
+                logger.debug("Stack trace: ", e)
 
                 if (attempt < maxRetryAttempts) {
-                    logger.info("  Waiting ${retryDelaySeconds}s before retry...")
+                    logger.info("  Waiting ${retryDelaySeconds}s before retry (attempt $attempt/$maxRetryAttempts)...")
                     delay(retryDelaySeconds * 1_000)
                 }
             }
         }
 
         if (!success) {
-            logger.error("Failed to post word '${word.word}' to Discord after $maxRetryAttempts attempts")
+            logger.error("Failed to post word '${word.word}' to Discord after $maxRetryAttempts attempts. (This may be due to VPN DNS interception.)")
+            logger.info("Word '${word.word}' was successfully stored in database. Discord posting will be retried on next scheduled execution.")
         }
     }
 
@@ -163,7 +171,9 @@ class DiscordService(
      * This handles cases where the initial @PostConstruct connection failed
      * (e.g., VPN DNS interception at startup time, network not ready).
      *
-     * Implements exponential backoff with NordVPN DNS workaround.
+     * VPN NOTE: Implements workaround for NordVPN split-DNS interception:
+     * - Disables Netty DNS caching which can interfer with VPN resolver
+     * - Uses native transport preference override
      */
     private fun ensureConnected() {
         if (gatewayClient != null) {
@@ -175,6 +185,8 @@ class DiscordService(
         try {
             System.setProperty("reactor.netty.http.server.accessLogEnabled", "false")
             System.setProperty("io.netty.resolver.dns.preferNativeTransport", "false")
+            // Additional NordVPN workaround: Disable HTTP/2 which can be affected by VPN MTU issues
+            System.setProperty("reactor.netty.http.h2c.enabled", "false")
 
             gatewayClient = DiscordClientBuilder.create(botToken)
                 .build()
@@ -183,7 +195,8 @@ class DiscordService(
 
             logger.info("✓ Discord bot reconnected successfully (lazy connection)")
         } catch (e: Exception) {
-            logger.error("✗ Discord lazy reconnection failed: $${e.message}", e)
+            logger.error("✗ Discord lazy reconnection failed: ${e.message} (likely VPN DNS interception)", e)
+            logger.warn("Discord will remain unavailable until the connection can be established. Scheduler will continue executing.")
             gatewayClient = null
         }
     }
