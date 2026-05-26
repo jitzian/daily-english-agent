@@ -4,7 +4,7 @@ plugins {
 	kotlin("plugin.jpa") version "2.3.10"
 	kotlin("plugin.serialization") version "2.3.10"
 	war
-	id("org.springframework.boot") version "4.1.0-SNAPSHOT"
+	id("org.springframework.boot") version "4.0.6"
 	id("io.spring.dependency-management") version "1.1.7"
 }
 
@@ -20,7 +20,6 @@ java {
 
 repositories {
 	mavenCentral()
-	maven { url = uri("https://repo.spring.io/snapshot") }
 }
 
 dependencies {
@@ -32,6 +31,10 @@ dependencies {
 	testImplementation("org.springframework.boot:spring-boot-starter-test")
 	testImplementation("org.jetbrains.kotlin:kotlin-test-junit5")
 	testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+
+	// Spring Core & Context (explicit to ensure full transitive resolution)
+	implementation("org.springframework:spring-core")
+	implementation("org.springframework:spring-context")
 
 	// AI & Ollama
 	implementation("ai.koog:koog-agents:0.6.3")
@@ -50,9 +53,9 @@ dependencies {
 	implementation("io.ktor:ktor-client-cio:$ktorVersion")
 	implementation("io.ktor:ktor-client-content-negotiation:$ktorVersion")
 
-	// Coroutines
-	implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.3")
-	implementation("org.jetbrains.kotlinx:kotlinx-coroutines-reactor:1.7.3")
+	// Coroutines (upgraded to latest stable for better stability)
+	implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
+	implementation("org.jetbrains.kotlinx:kotlinx-coroutines-reactor:1.10.2")
 
 	// Serialization
 	implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.3")
@@ -70,6 +73,11 @@ allOpen {
 	annotation("jakarta.persistence.Entity")
 	annotation("jakarta.persistence.MappedSuperclass")
 	annotation("jakarta.persistence.Embeddable")
+	// Spring annotations – ensures Kotlin generates non-final proxiable classes
+	annotation("org.springframework.stereotype.Component")
+	annotation("org.springframework.stereotype.Service")
+	annotation("org.springframework.stereotype.Repository")
+	annotation("org.springframework.transaction.annotation.Transactional")
 }
 
 // Force all reactor-netty artifacts to the version managed by the Spring Boot BOM.
